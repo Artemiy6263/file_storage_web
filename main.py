@@ -8,6 +8,7 @@ import json  # сохранение и чтение файла snapshot.json
 import os  # доступ к переменным окружения (там лежит строка подключения к БД)
 import sqlite3  # встроенная база данных (читаем список таблиц)
 import sys  # настройка вывода в консоль
+import tempfile  # временная папка для файлов, которые достаём из архивов
 import zipfile  # чтение zip-архивов
 from dataclasses import dataclass, asdict, field  # dataclass - "умный" класс, который сам делает __init__
 from datetime import datetime, timezone  # работа с датами и временем
@@ -37,12 +38,15 @@ DB_DSN = os.environ.get(  # строка подключения к БД: из п
     "DB_DSN",  # имя переменной окружения с параметрами подключения
     "host=localhost port=5432 dbname=file_storage user=postgres password=123",  # значение по умолчанию: локальная база file_storage (порт 5432, пользователь postgres)
 )  # конец вызова
-ROOT_PATH = r"E:\MAX_files"  # папка, которую сканируем (тестовый набор для замеров)
-SNAPSHOT_FILE = Path("snapshot.json")  # файл-снимок прошлого скана - по нему определяются статусы файлов
+ROOT_PATH = r"E:\ЗагрузкиGoogle"  # папка, которую сканируем (тестовый набор для замеров)
+SNAPSHOT_FILE = Path(__file__).parent / "snapshot.json"  # файл-снимок прошлого скана - по нему определяются статусы файлов
 HASH_CHUNK_SIZE = 64 * 1024  # читаем файл кусками по 64 КБ, чтобы не грузить его целиком в память
 MAX_CONTENT_SIZE = 5 * 1024 * 1024  # файлы больше 5 МБ не пытаемся читать для извлечения текста
 
 # Только реально текстовые форматы. CSV/YAML/HTML обрабатываются отдельными ветками.
+ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}  # форматы архивов, которые умеем открывать
+ARCHIVE_MAX_FILES = 100  # из одного архива читаем текст не более чем из 100 файлов (защита от огромных архивов)
+ARCHIVE_MAX_TEXT = 1024 * 1024  # и не более 1 МБ текста суммарно с одного архива
 TEXT_EXTENSIONS = {".txt", ".py", ".json", ".md", ".log", ".xml"}  # расширения простых текстовых файлов; остальные форматы обрабатываются отдельно
 
 try:  # настраиваем консольный вывод, чтобы русский текст не превращался в кашу
@@ -346,6 +350,62 @@ def convert_office_file(path: Path) -> Optional[Path]:  # конвертируе
         print(f"[CONVERT-SKIP] {path.name}: {type(e).__name__}: {e}")  # сообщаем и не падаем
         return None  # конвертация не удалась
 
+def read_archive_content(path: Path, ext: str) -> str:
+    """Список файлов в архиве + текст из тех файлов внутри, которые умеем читать. Вложенные архивы не раскрываем."""
+    names: list[str] = []  # имена всех файлов внутри архива
+    parts: list[str] = []  # блоки «=== имя ===\nтекст» для файлов, из которых достали текст
+    state = {"count": 0, "total": 0}  # сколько файлов уже прочитали и сколько текста набрали
+
+    with tempfile.TemporaryDirectory() as tmp:  # временная папка; удалится сама после выхода из блока
+        def add(name: str, size: int, get_bytes) -> None:  # обрабатывает один файл из архива
+            names.append(name)  # имя записываем всегда
+            member_ext = Path(name).suffix.lower()  # расширение файла внутри архива
+            if member_ext in ARCHIVE_EXTENSIONS or size > MAX_CONTENT_SIZE:  # вложенный архив или слишком большой файл
+                return  # текст не читаем
+            if state["count"] >= ARCHIVE_MAX_FILES or state["total"] >= ARCHIVE_MAX_TEXT:  # достигли лимитов
+                return  # дальше только имена
+            tmp_file = Path(tmp) / f"member{len(names)}{member_ext}"  # безопасное имя во временной папке (путь из архива не используем)
+            try:
+                tmp_file.write_bytes(get_bytes())  # достаём файл из архива во временную папку
+                text = read_text_content(tmp_file, size)  # читаем его тем же кодом, что и обычные файлы
+            except Exception as e:  # файл с паролем, повреждён и т.п.
+                print(f"[ARCHIVE-SKIP] {path.name} -> {name}: {type(e).__name__}: {e}")  # сообщаем и идём дальше
+                return
+            finally:
+                tmp_file.unlink(missing_ok=True)  # удаляем временный файл
+            if text and text.strip():  # если текст получился
+                text = text[: ARCHIVE_MAX_TEXT - state["total"]]  # не превышаем общий лимит
+                parts.append(f"=== {name} ===\n{text}")  # добавляем блок с именем файла
+                state["count"] += 1  # считаем прочитанный файл
+                state["total"] += len(text)  # считаем накопленный текст
+
+        if ext == ".zip":  # zip-архив
+            with zipfile.ZipFile(path) as z:
+                for info in z.infolist():
+                    if not info.is_dir():  # папки пропускаем
+                        add(info.filename, info.file_size, lambda i=info: z.read(i))
+        elif ext == ".7z":  # 7z-архив
+            with py7zr.SevenZipFile(path) as z:
+                for info in z.list():
+                    if not info.is_directory:
+                        def read_7z(n=info.filename):  # достаём один файл из 7z
+                            out = Path(tmp) / "x7z"  # отдельная подпапка для распаковки
+                            z.reset()  # в 7z перед каждой распаковкой нужно сбросить позицию
+                            z.extract(path=out, targets=[n])  # распаковываем только этот файл
+                            return (out / n).read_bytes()  # читаем его байты (дальше код тот же, что для zip)
+                        add(info.filename, info.uncompressed, read_7z)
+        elif ext == ".rar":  # rar-архив
+            with rarfile.RarFile(path) as r:
+                for info in r.infolist():
+                    if not info.is_dir():
+                        add(info.filename, info.file_size, lambda i=info: r.read(i))
+
+    result = "\n".join(names)  # сначала список файлов (как было раньше)
+    if parts:  # если из чего-то удалось достать текст
+        result += "\n\n" + "\n\n".join(parts)  # добавляем тексты после списка
+    return result
+
+
 def read_text_content(path: Path, size_bytes: int) -> Optional[str]:
     """Достаёт текст/метаданные из файла. None - если не умеем или слишком большой."""
     if size_bytes > MAX_CONTENT_SIZE:  # если файл больше 5 МБ
@@ -428,15 +488,8 @@ def read_text_content(path: Path, size_bytes: int) -> Optional[str]:
             return "\n".join(f"{k}: {v}" for k, v in audio.items())  # теги в виде «ключ: значение»
 
         # ---- АРХИВЫ ----
-        if ext == ".zip":  # zip-архив
-            with zipfile.ZipFile(path) as z:  # открываем
-                return "\n".join(z.namelist())  # пишем список файлов внутри
-        if ext == ".7z":  # 7z-архив
-            with py7zr.SevenZipFile(path) as z:  # открываем
-                return "\n".join(z.getnames())  # список файлов внутри
-        if ext == ".rar":  # rar-архив
-            with rarfile.RarFile(path) as r:  # открываем
-                return "\n".join(r.namelist())  # список файлов внутри
+        if ext in ARCHIVE_EXTENSIONS:  # zip / 7z / rar
+            return read_archive_content(path, ext)  # список файлов + текст из файлов внутри
 
         # ---- SQL ----
         if ext in (".sqlite", ".db"):  # файл базы данных SQL
