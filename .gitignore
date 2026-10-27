@@ -1,0 +1,4 @@
+   snapshot.json
+   __pycache__/
+   *.pyc
+   scan.log
