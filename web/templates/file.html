@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<p><a href="javascript:history.back()">← Назад</a></p>
+<h1>{{ f.name }}</h1>
+<p class="muted">{{ f.full_path }}</p>
+<table>
+  <tr><th>Размер</th><td>{{ f.size_bytes|size }}</td></tr>
+  <tr><th>Статус</th><td>{{ f.status }}</td></tr>
+  <tr><th>MD5</th><td>{{ f.md5_hash }}</td></tr>
+  <tr><th>Создан</th><td>{{ f.created_at|dt }}</td></tr>
+  <tr><th>Изменён</th><td>{{ f.modified_at|dt }}</td></tr>
+  <tr><th>Число изменений</th><td>{{ f.change_count }}</td></tr>
+</table>
+<h2>Содержимое</h2>
+{% if f.content %}<pre>{{ f.content[:20000] }}</pre>{% else %}<p class="muted">Текст из файла не извлечён.</p>{% endif %}
+{% endblock %}

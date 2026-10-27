@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Сканер файлов{% endblock %}</title>
+  <style>
+    body { font: 15px/1.5 system-ui, "Segoe UI", Arial, sans-serif; margin: 0; background: #f5f6f8; color: #1d2330; }
+    header { background: #fff; border-bottom: 1px solid #e3e6ec; padding: 12px 24px; display: flex; gap: 20px; align-items: center; }
+    header b { font-size: 17px; }
+    a { color: #2557d6; text-decoration: none; } a:hover { text-decoration: underline; }
+    main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #e3e6ec; }
+    th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #e3e6ec; }
+    th { font-size: 12px; color: #667085; text-transform: uppercase; }
+    .box { padding: 14px 18px; border-radius: 10px; margin-bottom: 18px; }
+    .ok { background: #e1f5ea; } .bad { background: #fbe5e3; border: 1px solid #c0332b; }
+    .muted { color: #667085; font-size: 13px; }
+    .tabs a { display: inline-block; padding: 5px 14px; margin-right: 6px; border: 1px solid #e3e6ec; border-radius: 99px; background: #fff; }
+    .tabs a.on { background: #2557d6; color: #fff; border-color: #2557d6; }
+    input { padding: 7px 10px; border: 1px solid #ccd1dc; border-radius: 8px; font: inherit; }
+    button { padding: 7px 16px; border: 0; border-radius: 8px; background: #2557d6; color: #fff; font: inherit; cursor: pointer; }
+    pre { background: #fff; border: 1px solid #e3e6ec; padding: 14px; white-space: pre-wrap; max-height: 450px; overflow: auto; }
+  </style>
+</head>
+<body>
+<header>
+  <b>Сканер файлов</b>
+  <a href="/">Сканирования</a>
+</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

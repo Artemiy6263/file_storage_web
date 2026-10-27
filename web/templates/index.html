@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Результаты сканирования</h1>
+
+{% if hours_ago is none %}
+  <div class="box bad"><b>Сканирований пока нет.</b> Запустите main.py хотя бы раз.</div>
+{% elif hours_ago > stale_hours %}
+  <div class="box bad"><b>Сканер давно не запускался:</b> последний скан был {{ hours_ago|round|int }} ч назад.
+    Проверьте расписание (cron / Планировщик заданий).</div>
+{% else %}
+  <div class="box ok"><b>Сканер работает.</b> Последний скан: {{ (scans[0].finished_at or scans[0].started_at)|dt }}
+    ({{ hours_ago|round(1) }} ч назад).</div>
+{% endif %}
+
+<table>
+  <tr><th>№</th><th>Дата и время</th><th>Папка</th><th>Всего файлов</th><th>Новых</th><th>Изменено</th><th>Удалено</th></tr>
+  {% for s in scans %}
+  <tr>
+    <td><a href="/scans/{{ s.id }}">#{{ s.id }}</a></td>
+    <td>{{ s.started_at|dt }}</td>
+    <td>{{ s.root_path }}</td>
+    <td>{{ s.files_total }}</td>
+    <td>{{ s.files_new }}</td><td>{{ s.files_modified }}</td><td>{{ s.files_deleted }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}
