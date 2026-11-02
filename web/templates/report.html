@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}{{ rep.title }} — отчёты{% endblock %}
+
+{# ячейка таблицы: что показывать зависит от вида колонки (kind) #}
+{% macro cell(r, key, kind) -%}
+  {%- if kind == 'file' -%}
+    <a href="{{ url_for('file_page', file_id=r.id) }}">{{ r.name }}</a><div class="path">{{ r.full_path }}</div>
+  {%- elif kind == 'folder' -%}
+    <b>{{ r.name }}</b><div class="path">{{ r.full_path }}</div>
+  {%- elif kind == 'scan' -%}
+    <a href="{{ url_for('scan_page', scan_id=r.id) }}">#{{ r.id }}</a>
+  {%- elif kind == 'size' -%}{% if r[key] is not none %}{{ r[key]|size }}{% endif %}
+  {%- elif kind == 'int' -%}{% if r[key] is not none %}{{ r[key]|num }}{% endif %}
+  {%- elif kind == 'date' -%}{{ r[key]|dt }}
+  {%- elif kind == 'pct' -%}
+    <div class="meter"><div class="fill" style="width: {{ [r[key], 100]|min }}%"></div></div><span class="pct">{{ r[key] }}%</span>
+  {%- elif kind == 'status' -%}<span class="badge {{ r[key] }}">{{ r[key]|status_ru }}</span>
+  {%- elif kind == 'new' -%}<span class="n-new {{ 'zero' if not r[key] }}">+{{ r[key]|num }}</span>
+  {%- elif kind == 'mod' -%}<span class="n-mod {{ 'zero' if not r[key] }}">~{{ r[key]|num }}</span>
+  {%- elif kind == 'del' -%}<span class="n-del {{ 'zero' if not r[key] }}">−{{ r[key]|num }}</span>
+  {%- elif kind == 'mono' -%}{% if r[key] %}<code>{{ r[key] }}</code>{% endif %}
+  {%- else -%}{{ r[key] if r[key] is not none else '' }}
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<h1>Отчёты</h1>
+<p class="sub">Сводные данные по всем просканированным файлам. Выберите отчёт:</p>
+
+<p class="tabs">
+  {% for r in reports %}
+    <a href="{{ url_for('report_page', slug=r.slug, root=root) }}" class="{{ 'active' if r.slug == slug }}">{{ r.title }}</a>
+  {% endfor %}
+</p>
+
+<form method="get" class="filters">
+  {% if slug != 'folders' %}
+  <label>Папка скана
+    <select name="root" onchange="this.form.submit()">
+      <option value="">Все папки</option>
+      {% for r in roots %}<option value="{{ r }}" {{ 'selected' if r == root }}>{{ r }}</option>{% endfor %}
+    </select>
+  </label>
+  {% else %}
+  <label>Папка скана
+    <select name="root" onchange="this.form.submit()">
+      {% for r in roots %}<option value="{{ r }}" {{ 'selected' if r == root or (not root and loop.first) }}>{{ r }}</option>{% endfor %}
+    </select>
+  </label>
+  {% endif %}
+  {% for opt in rep.options %}
+  <label>{{ opt.label }}
+    <select name="{{ opt.name }}" onchange="this.form.submit()">
+      {% for v, l in opt.choices %}<option value="{{ v }}" {{ 'selected' if selected[opt.name] == v }}>{{ l }}</option>{% endfor %}
+    </select>
+  </label>
+  {% endfor %}
+  <noscript><button>Показать</button></noscript>
+</form>
+
+{% if result.kpis %}
+<div class="grid" style="margin-bottom:18px">
+  {% for k in result.kpis %}
+  <div class="card stat"><div class="label">{{ k.label }}</div><div class="value">{{ k.value }}</div>{% if k.hint %}<div class="muted">{{ k.hint }}</div>{% endif %}</div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% for n in result.notes %}
+<div class="note {{ n.level }}">
+  {{ n.text }}{% if n.link %} <a href="{{ url_for('report_page', slug=n.link, root=root) }}">Открыть отчёт →</a>{% endif %}
+</div>
+{% endfor %}
+
+{% for sec in result.sections %}
+<h2>{{ sec.title }}</h2>
+{% if sec.note %}<p class="sub" style="margin-bottom:10px">{{ sec.note }}</p>{% endif %}
+<div class="tablewrap">
+<table>
+  <thead><tr>
+    {% for key, label, kind in sec.columns %}<th class="{{ 'r' if kind in ('int', 'size') }}">{{ label }}</th>{% endfor %}
+  </tr></thead>
+  <tbody>
+  {% for r in sec.rows %}
+    <tr class="{{ 'grp-first' if r.first }}">
+      {% for key, label, kind in sec.columns %}
+        <td class="{{ 'r nowrap' if kind in ('int', 'size') else ('nowrap' if kind in ('date', 'status') else '') }}">{{ cell(r, key, kind) }}</td>
+      {% endfor %}
+    </tr>
+  {% else %}
+    <tr><td colspan="{{ sec.columns|length }}" class="empty">{{ sec.empty }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% if sec.rows %}
+<p style="margin:8px 0 0"><a class="btn ghost" href="{{ url_for('report_csv', slug=slug, section=loop.index0, root=root, **selected) }}">Скачать CSV</a></p>
+{% endif %}
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Поиск файлов</h1>
+<form method="get" class="filters">
+  <input name="name" value="{{ name }}" placeholder="Имя или путь">
+  <input name="text" value="{{ text }}" placeholder="Текст внутри файла">
+  <button>Найти</button>
+</form>
+<p class="muted">Найдено файлов: {{ total|num }}{% if pages > 1 %} · страница {{ page }} из {{ pages }}{% endif %}</p>
+<div class="tablewrap"><table>
+  <tr><th>Файл</th><th>Папка</th><th>Размер</th><th>Изменён</th></tr>
+  {% for f in files %}
+  <tr>
+    <td><a href="/files/{{ f.id }}">{{ f.name }}</a></td>
+    <td class="muted">{{ f.full_path }}</td><td>{{ f.size_bytes|size }}</td><td>{{ f.modified_at|dt }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">Ничего не найдено</td></tr>
+  {% endfor %}
+</table></div>
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a href="{{ url_for('files', name=name, text=text, page=page - 1) }}">← Назад</a>{% endif %}
+  <span>Страница {{ page }} из {{ pages }}</span>
+  {% if page < pages %}<a href="{{ url_for('files', name=name, text=text, page=page + 1) }}">Вперёд →</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

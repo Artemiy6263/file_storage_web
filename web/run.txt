@@ -1,0 +1,10 @@
+@echo off
+rem Запуск веб-интерфейса на Windows. Один раз: pip install -r requirements.txt
+rem Чтобы открывать сайт с других компьютеров, замените 127.0.0.1 на 0.0.0.0
+chcp 65001 >nul
+set WEB_HOST=127.0.0.1
+set WEB_PORT=8000
+rem set DB_DSN=host=localhost port=5432 dbname=file_storage user=postgres password=123
+cd /d "%~dp0"
+python app.py
+pause
