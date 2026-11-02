@@ -7,12 +7,13 @@
 <p class="tabs">
   {% for key, title, count in [('new','Новые',scan.files_new), ('modified','Изменённые',scan.files_modified),
                                ('deleted','Удалённые',scan.files_deleted), ('unchanged','Без изменений',scan.files_unchanged)] %}
-    <a href="/scans/{{ scan.id }}?status={{ key }}" class="{{ 'on' if key == status }}">{{ title }} · {{ count }}</a>
+    <a href="/scans/{{ scan.id }}?status={{ key }}" class="{{ 'active' if key == status }}">{{ title }} · {{ count }}</a>
   {% endfor %}
 </p>
+<p class="muted">В БД хранится последнее состояние файла, поэтому для старых сканов списки могут быть неполными
+(числа вверху - точные).</p>
 
-
-<table>
+<div class="tablewrap"><table>
   <tr><th>Файл</th><th>Папка</th><th>Размер</th><th>Изменён</th></tr>
   {% for f in files %}
   <tr>
@@ -22,5 +23,5 @@
   {% else %}
   <tr><td colspan="4" class="muted">Файлов нет</td></tr>
   {% endfor %}
-</table>
+</table></div>
 {% endblock %}
