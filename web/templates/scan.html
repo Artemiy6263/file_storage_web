@@ -7,12 +7,16 @@
 <p class="tabs">
   {% for key, title, count in [('new','Новые',scan.files_new), ('modified','Изменённые',scan.files_modified),
                                ('deleted','Удалённые',scan.files_deleted), ('unchanged','Без изменений',scan.files_unchanged)] %}
-    <a href="/scans/{{ scan.id }}?status={{ key }}" class="{{ 'on' if key == status }}">{{ title }} · {{ count }}</a>
+    <a href="/scans/{{ scan.id }}?status={{ key }}" class="{{ 'active' if key == status }}">{{ title }} · {{ count }}</a>
   {% endfor %}
 </p>
+{% if legacy %}
+<p class="muted">Этот скан сделан до появления истории, поэтому список может быть неполным: показаны только файлы, которые с тех пор не менялись (числа во вкладках - точные).</p>
+{% elif no_list %}
+<p class="muted">Этот скан сделан прежней версией сканера, которая не сохраняла список неизменённых файлов. В новых сканах он есть.</p>
+{% endif %}
 
-
-<table>
+<div class="tablewrap"><table>
   <tr><th>Файл</th><th>Папка</th><th>Размер</th><th>Изменён</th></tr>
   {% for f in files %}
   <tr>
@@ -22,5 +26,12 @@
   {% else %}
   <tr><td colspan="4" class="muted">Файлов нет</td></tr>
   {% endfor %}
-</table>
+</table></div>
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a href="{{ url_for('scan_page', scan_id=scan.id, status=status, page=page - 1) }}">← Назад</a>{% endif %}
+  <span>Страница {{ page }} из {{ pages }} · файлов: {{ total|num }}</span>
+  {% if page < pages %}<a href="{{ url_for('scan_page', scan_id=scan.id, status=status, page=page + 1) }}">Вперёд →</a>{% endif %}
+</div>
+{% endif %}
 {% endblock %}

@@ -8,7 +8,6 @@ import json  # сохранение и чтение файла snapshot.json
 import os  # доступ к переменным окружения (там лежит строка подключения к БД)
 import sqlite3  # встроенная база данных (читаем список таблиц)
 import sys  # настройка вывода в консоль
-import tempfile  # временная папка для файлов, которые достаём из архивов
 import zipfile  # чтение zip-архивов
 from dataclasses import dataclass, asdict, field  # dataclass - "умный" класс, который сам делает __init__
 from datetime import datetime, timezone  # работа с датами и временем
@@ -38,15 +37,14 @@ DB_DSN = os.environ.get(  # строка подключения к БД: из п
     "DB_DSN",  # имя переменной окружения с параметрами подключения
     "host=localhost port=5432 dbname=file_storage user=postgres password=123",  # значение по умолчанию: локальная база file_storage (порт 5432, пользователь postgres)
 )  # конец вызова
-ROOT_PATH = r"E:\ЗагрузкиGoogle"  # папка, которую сканируем (тестовый набор для замеров)
-SNAPSHOT_FILE = Path(__file__).parent / "snapshot.json"  # файл-снимок прошлого скана - по нему определяются статусы файлов
+ROOT_PATH = r"E:\MAX_files"  # папка по умолчанию - используется, только если путь не передан ни аргументом, ни переменной SCAN_ROOT
+# Файл-снимок прошлого скана - по нему определяются статусы файлов.
+# Лежит рядом с main.py (а не в «текущей папке»), чтобы запуск из веб-интерфейса, cron и вручную использовал один и тот же файл.
+SNAPSHOT_FILE = Path(os.environ.get("SNAPSHOT_FILE") or Path(__file__).resolve().with_name("snapshot.json"))
 HASH_CHUNK_SIZE = 64 * 1024  # читаем файл кусками по 64 КБ, чтобы не грузить его целиком в память
 MAX_CONTENT_SIZE = 5 * 1024 * 1024  # файлы больше 5 МБ не пытаемся читать для извлечения текста
 
 # Только реально текстовые форматы. CSV/YAML/HTML обрабатываются отдельными ветками.
-ARCHIVE_EXTENSIONS = {".zip", ".7z", ".rar"}  # форматы архивов, которые умеем открывать
-ARCHIVE_MAX_FILES = 100  # из одного архива читаем текст не более чем из 100 файлов (защита от огромных архивов)
-ARCHIVE_MAX_TEXT = 1024 * 1024  # и не более 1 МБ текста суммарно с одного архива
 TEXT_EXTENSIONS = {".txt", ".py", ".json", ".md", ".log", ".xml"}  # расширения простых текстовых файлов; остальные форматы обрабатываются отдельно
 
 try:  # настраиваем консольный вывод, чтобы русский текст не превращался в кашу
@@ -117,6 +115,18 @@ class FileRecord:  # одна запись о файле - всё, что про
         }  # конец словаря
 
 # ------------------------- ХРАНИЛИЩА -------------------------
+# История сканов: статус каждого файла (новый / изменён / без изменений / удалён) именно в этом скане.
+# В таблице files хранится только последнее состояние файла, поэтому без этой таблицы
+# страница «Скан №N» для старых сканов оказывалась бы пустой.
+SCAN_FILES_DDL = """
+CREATE TABLE IF NOT EXISTS scan_files (
+    scan_id  INTEGER     NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    file_id  BIGINT      NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    status   VARCHAR(16) NOT NULL,
+    PRIMARY KEY (scan_id, file_id)
+)
+"""
+
 class ConsoleStorage:  # хранилище №1: просто печатает результаты в консоль
     def save(self, record: FileRecord) -> None:  # сохранить запись (здесь - вывести на экран)
         created = record.created_at.astimezone().strftime("%Y-%m-%d %H:%M:%S")  # дата создания в местном времени, формат «ГГГГ-ММ-ДД ЧЧ:ММ:СС»
@@ -158,6 +168,14 @@ class DatabaseStorage:  # хранилище №2: пишет результат
     def begin_scan(self, root: Path) -> None:  # создаём новую строку в таблице scans (начало скана)
         self.root = root.resolve()  # запоминаем абсолютный путь корня (он нужен для иерархии папок)
         with self.conn.cursor() as cur:  # курсор - через него выполняются все SQL-запросы; закроется сам после with
+            cur.execute(SCAN_FILES_DDL)  # таблица scan_files создаётся сама, если её ещё нет (для баз, созданных до её появления)
+            cur.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                        "WHERE conname = 'scan_files_status_check' AND conrelid = 'scan_files'::regclass")
+            row = cur.fetchone()
+            if row and "unchanged" not in row[0]:  # таблица создана старой версией (без статуса «без изменений») - расширяем
+                cur.execute("ALTER TABLE scan_files DROP CONSTRAINT scan_files_status_check")
+                cur.execute("ALTER TABLE scan_files ADD CONSTRAINT scan_files_status_check "
+                            "CHECK (status IN ('new', 'unchanged', 'modified', 'deleted'))")
             cur.execute(  # выполняем запрос: вставляем запись о скане
                 "INSERT INTO scans (root_path) VALUES (%s) RETURNING id",  # started_at заполнится сам
                 (str(self.root),),  # значение подставляется само вместо %s безопасно
@@ -182,9 +200,13 @@ class DatabaseStorage:  # хранилище №2: пишет результат
                 """
                 INSERT INTO paths (parent_id, name, full_path)
                 VALUES (%s, %s, %s)
-                ON CONFLICT (full_path) DO UPDATE SET name = EXCLUDED.name
+                ON CONFLICT (full_path) DO UPDATE SET
+                    name      = EXCLUDED.name,
+                    parent_id = COALESCE(EXCLUDED.parent_id, paths.parent_id)
                 RETURNING id
                 """,
+                # COALESCE: если папку раньше сканировали как корень (родителя не было), а теперь
+                # сканируем папку выше - родитель проставится; а уже известный родитель не затирается
                 # Убрали change_count, оставили только RETURNING id
                 (parent_id, directory.name or key, key),  # у корня диска имя пустое -> берём полный путьp
             )
@@ -203,11 +225,15 @@ class DatabaseStorage:  # хранилище №2: пишет результат
                        SET status = 'deleted', last_scan_id = %s, scanned_at = now()
                      WHERE name = %s
                        AND path_id = (SELECT id FROM paths WHERE full_path = %s)
+                    RETURNING id
                     """,
                     # Строку не удаляем, а помечаем статусом 'deleted'. Файл ищем по имени
                     # и по папке (id папки находим подзапросом по full_path)
                     (self.scan_id, record.name, str(Path(record.path).parent)),
                 )
+                row = cur.fetchone()  # id строки файла (None, если такого файла в БД не было)
+                if row:
+                    self.log_change(cur, row[0], record.status)  # запоминаем, что в этом скане файл удалён
             print(f"[{FileStatus.RU[record.status]}] {record.path}")  # показываем прогресс в консоли
             return  # для удалённого файла больше ничего делать не нужно
 
@@ -252,6 +278,7 @@ class DatabaseStorage:  # хранилище №2: пишет результат
                 params,
             )
             file_id, change_count = cur.fetchone()
+            self.log_change(cur, file_id, record.status)  # запоминаем статус файла в этом скане
             json_record = record.to_jsonable()
             json_record["change_count"] = change_count
             cur.execute(
@@ -264,6 +291,13 @@ class DatabaseStorage:  # хранилище №2: пишет результат
                 (file_id, json.dumps(json_record, ensure_ascii=False)),
             )
         print(f"[{FileStatus.RU.get(record.status, record.status)}] {record.path}")  # прогресс в консоли
+
+    # ---- таблица scan_files: статус каждого файла в этом скане ----
+    def log_change(self, cur, file_id: int, status: str) -> None:
+        cur.execute(
+            "INSERT INTO scan_files (scan_id, file_id, status) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+            (self.scan_id, file_id, status),
+        )
 
     # ---- таблица scans: конец сканирования ----
     def finish_scan(self, summary: dict) -> None:
@@ -298,7 +332,7 @@ class DatabaseStorage:  # хранилище №2: пишет результат
         self.conn.commit()  # фиксируем всё, что записали за скан
         self.conn.close()  # закрываем соединение
 
-storage = DatabaseStorage() if ENABLE_DB_SYNC else ConsoleStorage()  # если ENABLE_DB_SYNC=True - пишем в БД, иначе - просто в консоль
+storage = None  # хранилище создаётся в main() - после проверки пути, а не при импорте файла (иначе подключение к БД открывалось бы даже при неверной папке)
 
 # ------------------------- УТИЛИТЫ -------------------------
 # Контрольная сумма MD5 - единственный хэш; используется для сравнения файлов со снимком
@@ -349,62 +383,6 @@ def convert_office_file(path: Path) -> Optional[Path]:  # конвертируе
     except Exception as e:  # Office недоступен или файл не открылся
         print(f"[CONVERT-SKIP] {path.name}: {type(e).__name__}: {e}")  # сообщаем и не падаем
         return None  # конвертация не удалась
-
-def read_archive_content(path: Path, ext: str) -> str:
-    """Список файлов в архиве + текст из тех файлов внутри, которые умеем читать. Вложенные архивы не раскрываем."""
-    names: list[str] = []  # имена всех файлов внутри архива
-    parts: list[str] = []  # блоки «=== имя ===\nтекст» для файлов, из которых достали текст
-    state = {"count": 0, "total": 0}  # сколько файлов уже прочитали и сколько текста набрали
-
-    with tempfile.TemporaryDirectory() as tmp:  # временная папка; удалится сама после выхода из блока
-        def add(name: str, size: int, get_bytes) -> None:  # обрабатывает один файл из архива
-            names.append(name)  # имя записываем всегда
-            member_ext = Path(name).suffix.lower()  # расширение файла внутри архива
-            if member_ext in ARCHIVE_EXTENSIONS or size > MAX_CONTENT_SIZE:  # вложенный архив или слишком большой файл
-                return  # текст не читаем
-            if state["count"] >= ARCHIVE_MAX_FILES or state["total"] >= ARCHIVE_MAX_TEXT:  # достигли лимитов
-                return  # дальше только имена
-            tmp_file = Path(tmp) / f"member{len(names)}{member_ext}"  # безопасное имя во временной папке (путь из архива не используем)
-            try:
-                tmp_file.write_bytes(get_bytes())  # достаём файл из архива во временную папку
-                text = read_text_content(tmp_file, size)  # читаем его тем же кодом, что и обычные файлы
-            except Exception as e:  # файл с паролем, повреждён и т.п.
-                print(f"[ARCHIVE-SKIP] {path.name} -> {name}: {type(e).__name__}: {e}")  # сообщаем и идём дальше
-                return
-            finally:
-                tmp_file.unlink(missing_ok=True)  # удаляем временный файл
-            if text and text.strip():  # если текст получился
-                text = text[: ARCHIVE_MAX_TEXT - state["total"]]  # не превышаем общий лимит
-                parts.append(f"=== {name} ===\n{text}")  # добавляем блок с именем файла
-                state["count"] += 1  # считаем прочитанный файл
-                state["total"] += len(text)  # считаем накопленный текст
-
-        if ext == ".zip":  # zip-архив
-            with zipfile.ZipFile(path) as z:
-                for info in z.infolist():
-                    if not info.is_dir():  # папки пропускаем
-                        add(info.filename, info.file_size, lambda i=info: z.read(i))
-        elif ext == ".7z":  # 7z-архив
-            with py7zr.SevenZipFile(path) as z:
-                for info in z.list():
-                    if not info.is_directory:
-                        def read_7z(n=info.filename):  # достаём один файл из 7z
-                            out = Path(tmp) / "x7z"  # отдельная подпапка для распаковки
-                            z.reset()  # в 7z перед каждой распаковкой нужно сбросить позицию
-                            z.extract(path=out, targets=[n])  # распаковываем только этот файл
-                            return (out / n).read_bytes()  # читаем его байты (дальше код тот же, что для zip)
-                        add(info.filename, info.uncompressed, read_7z)
-        elif ext == ".rar":  # rar-архив
-            with rarfile.RarFile(path) as r:
-                for info in r.infolist():
-                    if not info.is_dir():
-                        add(info.filename, info.file_size, lambda i=info: r.read(i))
-
-    result = "\n".join(names)  # сначала список файлов (как было раньше)
-    if parts:  # если из чего-то удалось достать текст
-        result += "\n\n" + "\n\n".join(parts)  # добавляем тексты после списка
-    return result
-
 
 def read_text_content(path: Path, size_bytes: int) -> Optional[str]:
     """Достаёт текст/метаданные из файла. None - если не умеем или слишком большой."""
@@ -488,8 +466,15 @@ def read_text_content(path: Path, size_bytes: int) -> Optional[str]:
             return "\n".join(f"{k}: {v}" for k, v in audio.items())  # теги в виде «ключ: значение»
 
         # ---- АРХИВЫ ----
-        if ext in ARCHIVE_EXTENSIONS:  # zip / 7z / rar
-            return read_archive_content(path, ext)  # список файлов + текст из файлов внутри
+        if ext == ".zip":  # zip-архив
+            with zipfile.ZipFile(path) as z:  # открываем
+                return "\n".join(z.namelist())  # пишем список файлов внутри
+        if ext == ".7z":  # 7z-архив
+            with py7zr.SevenZipFile(path) as z:  # открываем
+                return "\n".join(z.getnames())  # список файлов внутри
+        if ext == ".rar":  # rar-архив
+            with rarfile.RarFile(path) as r:  # открываем
+                return "\n".join(r.namelist())  # список файлов внутри
 
         # ---- SQL ----
         if ext in (".sqlite", ".db"):  # файл базы данных SQL
@@ -554,23 +539,35 @@ def build_record(path: Path) -> Optional[FileRecord]:  # собираем зап
         return None  # запись не создаём
 
 # ------------------------- СНИМОК -------------------------
-def load_snapshot() -> dict[str, str]:  # читаем снимок прошлого скана
-    if not SNAPSHOT_FILE.exists():  # файла нет (первый запуск)
-        return {}  # пустой словарь - все файлы будут "новыми"
-    try:
-        data = json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))  # читаем JSON
-        return {rec["path"]: rec["md5_hash"] for rec in data}  # превращаем в словарь: путь -> хэш MD5
-    except (json.JSONDecodeError, KeyError, OSError) as e:  # файл битый или не читается
-        print(f"[WARN] Не удалось прочитать снимок: {e}")  # предупреждаем
-        return {}  # считаем, что снимка нет
+def is_under(path: str, root: Path) -> bool:  # лежит ли файл внутри папки root (или это сама папка)
+    p = os.path.normcase(path)  # normcase: на Windows приводит к нижнему регистру и \ - регистр в путях не важен
+    r = os.path.normcase(str(root)).rstrip("\\/") + os.sep  # корень со слэшем на конце, чтобы C:\Data не считалась «родителем» C:\Data2
+    return p.startswith(r)  # true, если путь начинается с корня
 
-def save_snapshot(records: list[FileRecord]) -> None:  # сохраняем снимок текущего скана
-    alive = [r for r in records if r.status != FileStatus.DELETED]  # удалённые файлы в снимок не пишем
-    SNAPSHOT_FILE.write_text(
-        json.dumps([r.to_jsonable() for r in alive], ensure_ascii=False, indent=2),  # ensure_ascii=False - кириллица сохраняется, indent=2 - отступы в 2 пробела.
+def read_snapshot_raw() -> list[dict]:  # читаем снимок как есть - список словарей (пустой список, если снимка нет или он битый)
+    if not SNAPSHOT_FILE.exists():  # файла нет (первый запуск)
+        return []  # пусто - все файлы будут "новыми"
+    try:
+        return json.loads(SNAPSHOT_FILE.read_text(encoding="utf-8"))  # читаем JSON
+    except (json.JSONDecodeError, OSError) as e:  # файл битый или не читается
+        print(f"[WARN] Не удалось прочитать снимок: {e}")  # предупреждаем
+        return []  # считаем, что снимка нет
+
+def load_snapshot(root: Path) -> dict[str, str]:  # снимок прошлого скана, но только по файлам внутри root
+    # Снимок общий для всех папок. Если бы мы брали его целиком, то при скане другой папки
+    # все файлы первой папки попали бы в «удалённые» - поэтому берём только записи внутри root.
+    return {rec["path"]: rec["md5_hash"] for rec in read_snapshot_raw() if is_under(rec["path"], root)}  # путь -> хэш MD5
+
+def save_snapshot(records: list[FileRecord], root: Path) -> None:  # сохраняем снимок текущего скана
+    kept = [rec for rec in read_snapshot_raw() if not is_under(rec["path"], root)]  # записи других папок оставляем как были
+    alive = [r.to_jsonable() for r in records if r.status != FileStatus.DELETED]  # удалённые файлы в снимок не пишем
+    tmp = SNAPSHOT_FILE.with_suffix(".tmp")  # сначала пишем во временный файл, чтобы при сбое не испортить старый снимок
+    tmp.write_text(
+        json.dumps(kept + alive, ensure_ascii=False, indent=2),  # ensure_ascii=False - кириллица сохраняется, indent=2 - отступы в 2 пробела.
         # Без него весь JSON будет одной длинной строкой
         encoding="utf-8",
     )
+    os.replace(tmp, SNAPSHOT_FILE)  # подменяем старый снимок новым одним действием
 
 # ------------------------- СКАНЕР -------------------------
 def scan_directory(root: Path) -> Iterator[FileRecord]:  # обходит папку рекурсивно и отдаёт записи о файлах (генератор)
@@ -584,7 +581,7 @@ def scan_directory(root: Path) -> Iterator[FileRecord]:  # обходит пап
 
 # ------------------------- ОСНОВНАЯ ЛОГИКА -------------------------
 def run_scan(root: Path) -> list[FileRecord]:  # основной проход
-    previous = load_snapshot()  # прошлый снимок: path -> MD5
+    previous = load_snapshot(root)  # прошлый снимок по этой папке: path -> MD5
     seen_paths: set[str] = set()  # пути, которые встретили в этом скане
     results: list[FileRecord] = []  # сюда собираем все записи
 
@@ -620,11 +617,19 @@ def run_scan(root: Path) -> list[FileRecord]:  # основной проход
 
     return results  # возвращаем всё, что нашли
 
+def get_root() -> Path:  # какую папку сканировать: аргумент командной строки > переменная SCAN_ROOT > ROOT_PATH
+    if len(sys.argv) > 1 and sys.argv[1].strip():  # python main.py "D:\Документы" - так запускает сканер веб-интерфейс
+        return Path(sys.argv[1])
+    return Path(os.environ.get("SCAN_ROOT") or ROOT_PATH)
+
 def main() -> None:  # главная функция
-    root = Path(ROOT_PATH)  # папка для сканирования
-    if not root.exists():  # если её нет
-        print(f"Путь не существует: {root}")  # сообщаем
-        return  # выходим
+    global storage  # будем присваивать глобальную переменную storage
+    root = get_root()  # папка для сканирования
+    if not root.is_dir():  # если её нет или это не папка
+        print(f"Путь не существует или это не папка: {root}")  # сообщаем
+        sys.exit(2)  # код выхода 2 - чтобы веб-интерфейс и планировщик увидели ошибку
+
+    storage = DatabaseStorage() if ENABLE_DB_SYNC else ConsoleStorage()  # если ENABLE_DB_SYNC=True - пишем в БД, иначе - просто в консоль
 
     # try/except нужен, чтобы при ошибке откатить изменения в БД
     try:
@@ -641,8 +646,11 @@ def main() -> None:  # главная функция
         storage.rollback()  # если что-то сломалось - откатываем всё, что записали
         raise  # пробрасываем ошибку дальше, чтобы было видно в консоли
 
-    save_snapshot(results)  # сохраняем снимок - пригодится в следующий раз
+    save_snapshot(results, root)  # сохраняем снимок - пригодится в следующий раз
 
+    scan_id = getattr(storage, "scan_id", None)  # номер скана в БД (у консольного хранилища его нет)
+    if scan_id:
+        print(f"SCAN_ID={scan_id}")  # по этой строке веб-интерфейс находит страницу только что сделанного скана
     print("=" * 60)
     print(f"Всего обработано:     {len(results)}")  # сколько всего файлов
     print(f"  новых:              {summary[FileStatus.NEW]}")  # сколько новых

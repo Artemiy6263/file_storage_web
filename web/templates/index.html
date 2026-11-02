@@ -3,16 +3,16 @@
 <h1>Результаты сканирования</h1>
 
 {% if hours_ago is none %}
-  <div class="box bad"><b>Сканирований пока нет.</b> Запустите main.py хотя бы раз.</div>
+  <div class="banner empty"><b>Сканирований пока нет.</b> Выберите папку на вкладке <a href="{{ url_for('run_page') }}">«Запуск скана»</a>.</div>
 {% elif hours_ago > stale_hours %}
-  <div class="box bad"><b>Сканер давно не запускался:</b> последний скан был {{ hours_ago|round|int }} ч назад.
-    Проверьте расписание (cron / Планировщик заданий).</div>
+  <div class="banner stale"><b>Сканер давно не запускался:</b> последний скан был {{ hours_ago|round|int }} ч назад.
+    Запустите скан на вкладке <a href="{{ url_for('run_page') }}">«Запуск скана»</a> или проверьте расписание.</div>
 {% else %}
-  <div class="box ok"><b>Сканер работает.</b> Последний скан: {{ (scans[0].finished_at or scans[0].started_at)|dt }}
+  <div class="banner ok"><b>Сканер работает.</b> Последний скан: {{ (scans[0].finished_at or scans[0].started_at)|dt }}
     ({{ hours_ago|round(1) }} ч назад).</div>
 {% endif %}
 
-<table>
+<div class="tablewrap"><table>
   <tr><th>№</th><th>Дата и время</th><th>Папка</th><th>Всего файлов</th><th>Новых</th><th>Изменено</th><th>Удалено</th></tr>
   {% for s in scans %}
   <tr>
@@ -23,5 +23,5 @@
     <td>{{ s.files_new }}</td><td>{{ s.files_modified }}</td><td>{{ s.files_deleted }}</td>
   </tr>
   {% endfor %}
-</table>
+</table></div>
 {% endblock %}

@@ -75,6 +75,16 @@ CREATE TABLE IF NOT EXISTS json (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- История сканов: статус каждого файла (новый / изменён / без изменений / удалён) в каждом скане.
+-- (Сканер создаёт эту таблицу сам, если её нет; здесь - для чистой установки.)
+CREATE TABLE IF NOT EXISTS scan_files (
+    scan_id  INTEGER     NOT NULL REFERENCES scans(id) ON DELETE CASCADE,
+    file_id  BIGINT      NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    status   VARCHAR(16) NOT NULL,
+    PRIMARY KEY (scan_id, file_id),
+    CONSTRAINT scan_files_status_check CHECK (status IN ('new', 'unchanged', 'modified', 'deleted'))
+);
+
 -- Миграция существующей базы
 ALTER TABLE files ADD COLUMN IF NOT EXISTS change_count INTEGER NOT NULL DEFAULT 0;
 
