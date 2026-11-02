@@ -88,5 +88,15 @@ def file_page(file_id):
 
 
 if __name__ == "__main__":
+    import threading
+    import webbrowser
+
+    host = os.environ.get("WEB_HOST", "0.0.0.0")
+    port = int(os.environ.get("WEB_PORT", "8000"))
+    # 0.0.0.0 — это «слушать всех», в браузере открываем 127.0.0.1
+    url = f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
+    if os.environ.get("OPEN_BROWSER", "1") != "0":  # отключить: OPEN_BROWSER=0
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()  # через секунду, когда сервер уже поднялся
+    app.run(host=host, port=port)
     # 0.0.0.0 = принимать подключения и с других компьютеров сети (не только с этого)
     app.run(host=os.environ.get("WEB_HOST", "0.0.0.0"), port=int(os.environ.get("WEB_PORT", "8000")))
